@@ -574,26 +574,21 @@ function saverFlush(){
   if(!jobs.length && !teamJob) return;
   Saver.busy = true;
   var root = Saver.dir, done = 0;
-  var chain = root.getDirectoryHandle('試合データ', {create:true}).then(function(gdir){
-    return jobs.reduce(function(p, g){
-      return p.then(function(){
-        return gdir.getDirectoryHandle(gameFolder(g), {create:true}).then(function(fd){
-          var keep = S.game; S.game = g;
-          var csvP, csvB, csvT;
-          try{ csvP = buildCSV('pitch', g); csvB = buildCSV('bat', g); csvT = buildCSV('pit', g); }catch(e){} finally{ S.game = keep; }
-          return writeText(fd, '試合データ.json', JSON.stringify(g, null, 1))
-            .then(function(){ return csvP ? writeText(fd, '一球データ.csv', csvP) : null; })
-            .then(function(){ return csvB ? writeText(fd, '打撃成績.csv', csvB) : null; })
-            .then(function(){ return csvT ? writeText(fd, '投手成績.csv', csvT) : null; })
-            .then(function(){ Saver.last[g.id] = (g.rev||0) + '|' + (g.updatedAt||0); done++; });
-        });
-      });
-    }, Promise.resolve());
-  });
+  var chain = jobs.reduce(function(p, g){
+    return p.then(function(){
+      var base = gameFolder(g), keep = S.game, csvP, csvB, csvT;
+      S.game = g;
+      try{ csvP = buildCSV('pitch', g); csvB = buildCSV('bat', g); csvT = buildCSV('pit', g); }catch(e){} finally{ S.game = keep; }
+      return Promise.resolve()
+        .then(function(){ return csvP ? writeText(root, base + '_一球データ.csv', csvP) : null; })
+        .then(function(){ return csvB ? writeText(root, base + '_打撃成績.csv', csvB) : null; })
+        .then(function(){ return csvT ? writeText(root, base + '_投手成績.csv', csvT) : null; })
+        .then(function(){ Saver.last[g.id] = (g.rev||0) + '|' + (g.updatedAt||0); done++; });
+    });
+  }, Promise.resolve());
   if(teamJob){
     var tm = clone(S.team);
-    chain = chain.then(function(){ return writeText(root, '選手マスタ.json', JSON.stringify(tm, null, 1)); })
-      .then(function(){ return writeText(root, '選手マスタ.csv', rosterCSV(tm)); })
+    chain = chain.then(function(){ return writeText(root, '選手マスタ.csv', rosterCSV(tm)); })
       .then(function(){ Saver.last.__team = (tm.rev||0) + '|' + (tm.updatedAt||0); done++; });
   }
   chain.then(function(){
@@ -615,17 +610,17 @@ function saverCard(){
   var writer = !S.readOnly;
   if(!saverSupported()){
     if(!writer) return '';
-    return '<section class="card stack" style="gap:8px"><div class="eyebrow">データの保存</div><p class="small muted">パソコンのChromeかEdgeでこのページを開くと、選んだフォルダに試合のデータを自動で保存できます。この端末では、全試合を1つのファイルにしてダウンロードできます。</p><div class="row" style="flex-wrap:wrap"><button class="btn" data-a="dlall">全試合をダウンロード</button>' + importBtn() + '</div></section>';
+    return '<section class="card stack" style="gap:8px"><div class="eyebrow">データの保存</div><p class="small muted">パソコンのChromeかEdgeでこのページを開くと、選んだフォルダに試合のCSVを自動で保存できます。この端末では、全試合を1つのファイルにしてダウンロードできます。</p><div class="row" style="flex-wrap:wrap"><button class="btn" data-a="dlall">全試合をダウンロード</button>' + importBtn() + '</div></section>';
   }
   var h = '';
   if(!Saver.dir){
-    h += '<p class="small muted">保存先のフォルダを選ぶと、試合ごとに「試合データ（JSON）」「一球データ・打撃成績・投手成績（CSV）」を、記録が更新されるたびに自動で保存します。このページを開いている間、保存が続きます。</p>';
+    h += '<p class="small muted">保存先のフォルダを選ぶと、試合ごとの「一球データ」「打撃成績」「投手成績」のCSVを、そのフォルダに記録が更新されるたびに自動で保存します。ファイル名は「日付_開始時刻_先攻vs後攻_一球データ.csv」のようになります。このページを開いている間、保存が続きます。</p>';
     h += '<button class="btn dark" data-a="pickdir">保存先のフォルダを選ぶ</button>';
   } else if(Saver.perm!=='granted'){
     h += '<p class="small">保存先：<b>' + esc(Saver.dir.name) + '</b></p><p class="small muted">ブラウザを開き直したため、フォルダへの書き込みをもう一度許可する必要があります。</p>';
     h += '<div class="row" style="flex-wrap:wrap"><button class="btn dark" data-a="resumedir">自動保存を再開</button><button class="linkbtn small" data-a="stopdir">保存先を外す</button></div>';
   } else {
-    h += '<p class="small">保存先：<b>' + esc(Saver.dir.name) + '</b> ／ 試合データ</p><p class="small muted" id="saver-status">' + esc(saverStatus()) + '</p>';
+    h += '<p class="small">保存先：<b>' + esc(Saver.dir.name) + '</b>（CSVで保存）</p><p class="small muted" id="saver-status">' + esc(saverStatus()) + '</p>';
     h += '<div class="row" style="flex-wrap:wrap"><button class="btn sm" data-a="pickdir">保存先を変える</button><button class="linkbtn small" data-a="stopdir">自動保存をやめる</button></div>';
   }
   if(Saver.err) h += '<p class="banner">' + esc(Saver.err) + '</p>';
