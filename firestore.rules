@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 記録係（入力できる人）のメールアドレス。Authentication に登録したものと同じにします。
+    // 複数人にするときは ['a@example.com', 'b@example.com'] のように並べます。
+    function isScorer() {
+      return request.auth != null
+        && request.auth.token.email in ['hiroto052355@gmail.com'];
+    }
+
+    // 試合：だれでも見られる（速報）、書き込みは記録係だけ
+    match /games/{gameId} {
+      allow read: if true;
+      allow write: if isScorer();
+    }
+
+    // 選手マスタと削除記録：記録係だけ
+    match /team/{docId} {
+      allow read, write: if isScorer();
+    }
+    match /deleted/{gameId} {
+      allow read, write: if isScorer();
+    }
+  }
+}
