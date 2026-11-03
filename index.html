@@ -135,6 +135,9 @@ p{margin:0}
 .ghead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:14px 0 6px;border-top:2px solid var(--ink)}
 .ghead:first-of-type{border-top:0}
 .ghead b{font-size:16px}
+a.btn{color:var(--ink);text-decoration:none}
+.imp-list{font-size:13px;line-height:1.7;max-height:200px;overflow:auto;background:var(--chip);border-radius:10px;padding:8px 10px}
+.drop-on main{outline:3px dashed var(--accent);outline-offset:-6px;border-radius:12px}
 .gconfirm{background:var(--accent-soft);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
 details summary{cursor:pointer;font-weight:700;min-height:28px}
 
@@ -324,6 +327,8 @@ var BT = {G:'ゴロ',F:'フライ',L:'ライナー',B:'バント'};
 var RUN = {SB:'盗塁',CS:'盗塁死',PO:'牽制死',WP:'暴投',PB:'捕逸',BK:'ボーク',OB:'走塁死',AD:'その他の進塁'};
 var FPOS = [null,[150,212],[150,262],[194,200],[172,168],[106,200],[128,168],[68,112],[150,84],[232,112]];
 var HOME = [150,248];
+var XLSX_URL = 'vendor/xlsx.full.min.js';
+var TEMPLATE_URL = 'roster-template.xlsx';
 var SDK = 'https://www.gstatic.com/firebasejs/10.14.1/';
 function pageURL(){ return location.href.split('#')[0]; }
 function fbConfigured(){ var c = window.FIREBASE_CONFIG; return !!(c && c.projectId && c.apiKey); }
@@ -353,6 +358,146 @@ function rosterGroups(){
     var ps = groups[k], label = k==='none' ? '学年未設定' : k.indexOf('ob')===0 ? '卒業生（' + gradeLabel(ps[0]) + '）' : k.slice(1) + '年生';
     return {key:k, label:label, players:ps};
   });
+}
+function loadLib(src){
+  return new Promise(function(res, rej){ var el = document.createElement('script'); el.src = src; el.async = true; el.onload = function(){ res(); }; el.onerror = function(){ rej(new Error('load')); }; document.head.appendChild(el); });
+}
+function hw(t){ return String(t == null ? '' : t).replace(/[０-９Ａ-Ｚａ-ｚ]/g, function(x){ return String.fromCharCode(x.charCodeAt(0)-0xFEE0); }).trim(); }
+function nameKey(n){ return String(n || '').replace(/[\s　]+/g, ''); }
+var POS_WORD = {'投手':'投','捕手':'捕','一塁手':'一','二塁手':'二','三塁手':'三','遊撃手':'遊','左翼手':'左','中堅手':'中','右翼手':'右','内野手':'内','外野手':'外','一塁':'一','二塁':'二','三塁':'三','遊撃':'遊','左翼':'左','中堅':'中','右翼':'右','内野':'内','外野':'外','ピッチャー':'投','キャッチャー':'捕','ファースト':'一','セカンド':'二','サード':'三','ショート':'遊','レフト':'左','センター':'中','ライト':'右'};
+function normPos(v){ v = hw(v); if(!v) return ''; if(POS_WORD[v]) return POS_WORD[v]; return /^[投捕一二三遊左中右内外]$/.test(v) ? v : ''; }
+function normGrade(v){ var m = hw(v).match(/^(?:中学?|高校?|大学?)?\s*([1-6])\s*(?:年生?)?$/); return m ? m[1] : ''; }
+/* one free-form line: 背番号 氏名 守備 投打 学年 (any order) */
+function parseLoose(cells){
+  var num = '', pos = '', th = '', ba = '', gr = '', name = [];
+  cells.forEach(function(c){
+    c = String(c == null ? '' : c).trim(); if(!c) return;
+    var cc = hw(c);
+    var g = /年|^中|^高|^大/.test(cc) ? normGrade(cc) : '';
+    if(!gr && g){ gr = g; return; }
+    if(!num && /^\d{1,3}$/.test(cc)) { num = cc; return; }
+    var pz = normPos(c);
+    if(!pos && pz){ pos = pz; return; }
+    var hb = c.replace(/投|打/g,'');
+    if(/^[右左両]{2}$/.test(hb) && !th){ th = hb[0]; ba = hb[1]; return; }
+    if(/^[右左両]$/.test(hb)){ if(!th) th = hb; else if(!ba) ba = hb; return; }
+    name.push(c);
+  });
+  if(!name.length) return null;
+  return {num:num, name:name.join(' '), pos:pos, th:th, ba:ba, gr:gr};
+}
+var HDR = {num:/^(背番号|背番|番号|no\.?|#)$/i, name:/^(氏名|名前|選手名|選手)$/, grade:/^学年$/, pos:/^(守備位置|守備|ポジション|位置)$/, th:/^(投|投げ|利き腕|投球腕)$/, ba:/^(打|打席|打ち)$/, tb:/^(投打|投・打|投／打|投\/打)$/};
+function parseTable(rows){
+  rows = rows.map(function(r){ return (r || []).map(function(c){ return String(c == null ? '' : c).replace(/^﻿/, '').trim(); }); });
+  var hi = -1, col = {};
+  for(var i=0;i<Math.min(rows.length, 15);i++){
+    var m = {}; rows[i].forEach(function(c, j){ Object.keys(HDR).forEach(function(k){ if(m[k] == null && HDR[k].test(hw(c))) m[k] = j; }); });
+    if(m.name != null){ hi = i; col = m; break; }
+  }
+  var out = [], skipped = 0;
+  if(hi < 0){
+    rows.forEach(function(r){ var cells = r.filter(Boolean); if(!cells.length) return; if(cells.length===1) cells = cells[0].split(/[\s　]+/); var x = parseLoose(cells); if(x) out.push(x); else skipped++; });
+    return {players:out, skipped:skipped, header:false};
+  }
+  rows.slice(hi+1).forEach(function(r){
+    var get = function(k){ return col[k] == null ? '' : (r[col[k]] || ''); };
+    if(!Object.keys(col).some(function(k){ return get(k); })) return;
+    var name = get('name').replace(/[\s　]+/g, ' ').trim();
+    if(!name){ skipped++; return; }
+    var th = get('th'), ba = get('ba'), tb = get('tb').replace(/投|打|・|／|\//g, '');
+    if(tb && !th){ th = tb[0] || ''; ba = ba || tb[1] || ''; }
+    th = /左/.test(th) ? '左' : /右/.test(th) ? '右' : '';
+    ba = /両/.test(ba) ? '両' : /左/.test(ba) ? '左' : /右/.test(ba) ? '右' : '';
+    var num = hw(get('num')).replace(/^#/, '').replace(/\.0+$/, '');
+    out.push({num:num, name:name, pos:normPos(get('pos')), th:th, ba:ba, gr:normGrade(get('grade'))});
+  });
+  return {players:out, skipped:skipped, header:true};
+}
+function decodeText(buf){
+  var u = new Uint8Array(buf);
+  try{ return new TextDecoder('utf-8', {fatal:true}).decode(u); }catch(e){ try{ return new TextDecoder('shift_jis').decode(u); }catch(e2){ return new TextDecoder('utf-8').decode(u); } }
+}
+function csvRows(text){
+  var rows = [], row = [], f = '', q = false;
+  for(var i=0;i<text.length;i++){
+    var ch = text[i];
+    if(q){ if(ch==='"'){ if(text[i+1]==='"'){ f += '"'; i++; } else q = false; } else f += ch; continue; }
+    if(ch==='"'){ q = true; continue; }
+    if(ch===',' || ch==='\t'){ row.push(f); f = ''; continue; }
+    if(ch==='\n' || ch==='\r'){ if(ch==='\r' && text[i+1]==='\n') i++; row.push(f); rows.push(row); row = []; f = ''; continue; }
+    f += ch;
+  }
+  if(f || row.length){ row.push(f); rows.push(row); }
+  return rows;
+}
+function readRosterFile(file){
+  var name = file.name || '';
+  return file.arrayBuffer().then(function(buf){
+    if(/\.(csv|txt|tsv)$/i.test(name)) return csvRows(decodeText(buf));
+    if(!/\.(xlsx|xlsm|xls)$/i.test(name)) throw new Error('type');
+    return (window.XLSX ? Promise.resolve() : loadLib(XLSX_URL)).then(function(){
+      var wb = XLSX.read(new Uint8Array(buf), {type:'array'});
+      var pick = wb.SheetNames.indexOf('選手一覧') >= 0 ? '選手一覧' : null;
+      var sheets = wb.SheetNames.filter(function(n){ return !/使い方|記入例|説明/.test(n); });
+      var asRows = function(n){ return XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:false, defval:''}); };
+      if(!pick) pick = sheets.find(function(n){ return asRows(n).slice(0, 15).some(function(r){ return r.some(function(c){ return HDR.name.test(hw(c)); }); }); }) || sheets[0] || wb.SheetNames[0];
+      return asRows(pick);
+    });
+  });
+}
+function prepareImport(file){
+  if(S.readOnly || !file) return;
+  S.imp = {file:file.name, busy:true}; render();
+  readRosterFile(file).then(function(rows){
+    var r = parseTable(rows), byName = {}, list = [];
+    r.players.forEach(function(x){ var k = nameKey(x.name); if(!byName[k]) list.push(k); byName[k] = x; });
+    var have = {}; S.team.players.forEach(function(p){ have[nameKey(p.name)] = p; });
+    var add = [], upd = [];
+    list.forEach(function(k){ (have[k] ? upd : add).push(byName[k]); });
+    S.imp = {file:file.name, add:add, upd:upd, skipped:r.skipped};
+    render();
+    var el = document.getElementById('imp-card'); if(el && el.scrollIntoView) el.scrollIntoView({block:'start'});
+  }, function(e){
+    S.imp = {file:file.name, err:e && e.message==='type' ? 'Excel（.xlsx）かCSVのファイルを選んでください。' : e && e.message==='load' ? 'Excelを読むための部品を読み込めませんでした。電波を確認して、もう一度お試しください。' : 'ファイルを読み込めませんでした。'};
+    render();
+  });
+}
+function applyImport(){
+  var im = S.imp; if(!im || S.readOnly) return;
+  var have = {}; S.team.players.forEach(function(p){ have[nameKey(p.name)] = p; });
+  (im.add || []).forEach(function(x){
+    S.team.players.push({id:uid('p'), num:x.num, name:x.name, pos:x.pos, throws:x.th || '右', bats:x.ba || '右', ent:entFromGrade(x.gr)});
+  });
+  (im.upd || []).forEach(function(x){
+    var p = have[nameKey(x.name)]; if(!p) return;
+    if(x.num) p.num = x.num; if(x.pos) p.pos = x.pos; if(x.th) p.throws = x.th; if(x.ba) p.bats = x.ba; if(x.gr) p.ent = entFromGrade(x.gr);
+  });
+  saveTeam();
+  var msg = [(im.add||[]).length ? im.add.length + '人を追加' : '', (im.upd||[]).length ? im.upd.length + '人を更新' : ''].filter(Boolean).join('、');
+  S.imp = null; flash(msg ? msg + 'しました' : '変更はありませんでした'); render();
+}
+function importCard(ro){
+  var h = '<section class="card stack" id="imp-card"><h2 class="h2">Excel・CSVから登録</h2>';
+  h += '<p class="muted small">ひな形のExcelに入力して読み込むと、まとめて登録できます。同じ氏名の選手がいれば、新しく増やさずに内容を上書きします。パソコンでは、ファイルをこの画面にドラッグしても読み込めます。</p>';
+  var im = S.imp;
+  if(im && im.busy) h += '<p class="small">' + esc(im.file) + ' を読み込んでいます…</p>';
+  else if(im && im.err) h += '<p class="banner">' + esc(im.err) + '</p>';
+  else if(im){
+    var nm = function(x){ return esc((x.num ? '#' + x.num + ' ' : '') + x.name + (x.gr ? '（' + x.gr + '年）' : '')); };
+    h += '<p class="small"><b>' + esc(im.file) + '</b> の内容</p>';
+    if(im.add.length) h += '<div class="small"><b>新しく追加：' + im.add.length + '人</b></div><div class="imp-list">' + im.add.map(nm).join('、') + '</div>';
+    if(im.upd.length) h += '<div class="small"><b>登録済みなので上書き：' + im.upd.length + '人</b></div><div class="imp-list">' + im.upd.map(nm).join('、') + '</div>';
+    if(!im.add.length && !im.upd.length) h += '<p class="banner">登録できる選手が見つかりませんでした。1行目に「氏名」の見出しがあるか確かめてください。</p>';
+    if(im.skipped) h += '<p class="muted small">氏名が空の行が' + im.skipped + '行あったので、読み飛ばしました。</p>';
+    if(im.add.length || im.upd.length) h += '<div class="row" style="flex-wrap:wrap"><button class="btn dark" data-a="impok">' + (im.add.length + im.upd.length) + '人を登録する</button><button class="btn" data-a="impcancel">やめる</button></div>';
+    else h += '<button class="btn" data-a="impcancel">閉じる</button>';
+  }
+  if(!im || im.err){
+    h += '<div class="row" style="flex-wrap:wrap"><label class="btn dark"' + ro + '>ファイルを選ぶ<input type="file" id="roster-file" accept=".xlsx,.xlsm,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden' + ro + '></label>';
+    if(TEMPLATE_URL) h += '<a class="btn" href="' + esc(TEMPLATE_URL) + '" download="選手マスタ_ひな形.xlsx">ひな形をダウンロード</a>';
+    h += '</div>';
+  }
+  return h + '</section>';
 }
 function today(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function clone(o){ return JSON.parse(JSON.stringify(o)); }
@@ -1061,8 +1206,9 @@ function vRoster(){
   var ro = S.readOnly ? ' disabled' : '';
   var h = '<header class="topbar"><div class="wrap"><button class="btn sm" data-a="go" data-v="home">‹ 戻る</button><h1>選手マスタ</h1></div></header>';
   h += '<main class="wrap stack">';
-  h += '<label class="f">チーム名<input id="team-name" data-bind="team.name" data-save="team" value="' + esc(S.team.name) + '" placeholder="例：〇〇高校"' + ro + '></label>';
+  h += '<label class="f">チーム名<input id="team-name" data-bind="team.name" data-save="team" value="' + esc(S.team.name) + '" placeholder="例：〇〇中学校"' + ro + '></label>';
   h += '<div class="f">学年の数<div class="seg">' + [3,4].map(function(n){ return '<button type="button" class="' + (gradeCount()===n ? 'on' : '') + '" data-a="seg" data-k="grades" data-v="' + n + '"' + ro + '>' + n + '学年' + (n===3 ? '（中学・高校）' : '（大学）') + '</button>'; }).join('') + '</div><span class="muted small">学年は毎年4月に自動で1つ上がります。最上級生は4月に「卒業生」に移ります。</span></div>';
+  h += importCard(ro);
   h += '<section class="card stack"><h2 class="h2">選手を追加</h2>';
   h += '<div class="grid2"><label class="f">背番号<input id="np-num" inputmode="numeric" data-bind="newp.num" value="' + esc(np.num) + '"' + ro + '></label><label class="f">守備<select id="np-pos" data-bind="newp.pos"' + ro + '>' + posOptions(np.pos, true) + '</select></label></div>';
   h += '<div class="grid2"><label class="f">氏名<input id="np-name" data-bind="newp.name" value="' + esc(np.name) + '" placeholder="例：山田 太郎"' + ro + '></label><label class="f">学年' + gradeSelect('np-grade', 'newp.grade', np.grade) + '</label></div>';
@@ -1094,7 +1240,7 @@ function vRoster(){
   h += '</section></main>';
   return h;
 }
-function posLong(p){ return {'投':'投手','捕':'捕手','一':'一塁手','二':'二塁手','三':'三塁手','遊':'遊撃手','左':'左翼手','中':'中堅手','右':'右翼手','DH':'指名打者'}[p] || p; }
+function posLong(p){ return {'投':'投手','捕':'捕手','一':'一塁手','二':'二塁手','三':'三塁手','遊':'遊撃手','左':'左翼手','中':'中堅手','右':'右翼手','DH':'指名打者','内':'内野手','外':'外野手'}[p] || p; }
 function posOptions(cur, groups){
   var opts = groups ? [['','—'],['投','投手'],['捕','捕手'],['一','一塁手'],['二','二塁手'],['三','三塁手'],['遊','遊撃手'],['左','左翼手'],['中','中堅手'],['右','右翼手'],['内','内野手'],['外','外野手']] : [['','—']].concat(POS.map(function(p){ return [p, p==='DH' ? 'DH' : p]; }));
   return opts.map(function(o){ return '<option value="' + o[0] + '"' + (o[0]===cur ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
@@ -1722,28 +1868,17 @@ var A = {
     txt.split(/\r?\n/).forEach(function(line){
       line = line.trim(); if(!line) return;
       var cells = line.indexOf('\t')>=0 ? line.split('\t') : (line.indexOf(',')>=0 ? line.split(',') : line.split(/[\s　]+/));
-      cells = cells.map(function(c){ return c.trim(); }).filter(Boolean);
-      var num = '', pos = '', th = '', ba = '', gr = '', name = [];
-      cells.forEach(function(c){
-        var cc = c.replace(/[０-９]/g, function(x){ return String.fromCharCode(x.charCodeAt(0)-0xFEE0); });
-        var gm = cc.match(/^(?:高|中|大)?([1-6])年生?$/);
-        if(!gr && gm){ gr = gm[1]; return; }
-        if(!num && /^\d{1,3}$/.test(cc)) { num = cc; return; }
-        var pm = {'投手':'投','捕手':'捕','内野手':'内','外野手':'外','一塁手':'一','二塁手':'二','三塁手':'三','遊撃手':'遊','左翼手':'左','中堅手':'中','右翼手':'右'};
-        if(!pos && (pm[c] || /^[投捕一二三遊左中右内外]$/.test(c))){ pos = pm[c] || c; return; }
-        var hb = c.replace(/投|打/g,'');
-        if(/^[右左両]{2}$/.test(hb) && !th){ th = hb[0]; ba = hb[1]; return; }
-        if(/^[右左両]$/.test(hb)){ if(!th) th = hb; else if(!ba) ba = hb; return; }
-        name.push(c);
-      });
-      if(!name.length){ skipped++; return; }
-      S.team.players.push({id:uid('p'), num:num, name:name.join(' '), pos:pos, throws:th==='左'?'左':'右', bats:(ba==='左'||ba==='両')?ba:'右', ent:entFromGrade(gr)});
+      var x = parseLoose(cells.map(function(c){ return c.trim(); }).filter(Boolean));
+      if(!x){ skipped++; return; }
+      S.team.players.push({id:uid('p'), num:x.num, name:x.name, pos:x.pos, throws:x.th==='左'?'左':'右', bats:(x.ba==='左'||x.ba==='両')?x.ba:'右', ent:entFromGrade(x.gr)});
       n++;
     });
     if(n) saveTeam();
     S.bulkMsg = n ? n + '人を追加しました。' + (skipped ? '（氏名が読み取れない行が' + skipped + '行ありました）' : '') : '読み込める行がありませんでした。';
     render();
   },
+  impok:function(){ applyImport(); },
+  impcancel:function(){ S.imp = null; render(); },
   startgame:startGame,
   zone:function(d){ var z = +d.z; S.ui.z = S.ui.z===z ? null : z; render(); },
   flip:function(){ S.flip = !S.flip; LS.set('ps.flip', S.flip); render(); },
@@ -1892,6 +2027,10 @@ window.addEventListener('hashchange', function(){
   if(!g || (S.game && S.game.id===id && !S.demo && (S.view==='score' || S.view==='live' || S.view==='log'))) return;
   S.autoOpened = true; S.game = g; S.demo = false; S.redo = []; S.ui = freshUI(); watchGame(); go(S.readOnly ? 'live' : 'score');
 });
+app.addEventListener('change', function(ev){ if(ev.target && ev.target.id==='roster-file'){ var f = ev.target.files && ev.target.files[0]; ev.target.value = ''; prepareImport(f); } });
+document.addEventListener('dragover', function(ev){ if(S.view!=='roster' || S.readOnly) return; ev.preventDefault(); document.body.classList.add('drop-on'); });
+document.addEventListener('dragleave', function(ev){ if(ev.target===document.documentElement || ev.target===document.body || !ev.relatedTarget) document.body.classList.remove('drop-on'); });
+document.addEventListener('drop', function(ev){ document.body.classList.remove('drop-on'); if(S.view!=='roster' || S.readOnly) return; ev.preventDefault(); var f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0]; if(f) prepareImport(f); });
 
 /* ---------- boot ---------- */
 function startSession(){
